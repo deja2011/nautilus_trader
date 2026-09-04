@@ -54,7 +54,7 @@ pub fn parse_spot_exec_report_to_order_status(
     ts_init: UnixNanos,
 ) -> anyhow::Result<OrderStatusReport> {
     let client_order_id =
-        decode_client_order_id(&msg.client_order_id, BINANCE_NAUTILUS_SPOT_BROKER_ID)?;
+        decode_client_order_id(msg.order_client_order_id(), BINANCE_NAUTILUS_SPOT_BROKER_ID)?;
     let venue_order_id = VenueOrderId::new(msg.order_id.to_string());
     let ts_event = parse_millis_or_init(msg.event_time, "Spot execution event time", ts_init);
 
@@ -142,7 +142,7 @@ pub fn parse_spot_exec_report_to_fill(
     ts_init: UnixNanos,
 ) -> anyhow::Result<FillReport> {
     let client_order_id =
-        decode_client_order_id(&msg.client_order_id, BINANCE_NAUTILUS_SPOT_BROKER_ID)?;
+        decode_client_order_id(msg.order_client_order_id(), BINANCE_NAUTILUS_SPOT_BROKER_ID)?;
     let venue_order_id = VenueOrderId::new(msg.order_id.to_string());
     let trade_id = TradeId::new(msg.trade_id.to_string());
     let ts_event = parse_millis_or_init(msg.event_time, "Spot execution event time", ts_init);
