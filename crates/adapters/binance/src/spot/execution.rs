@@ -2764,14 +2764,18 @@ fn dispatch_execution_report(
         .get_instrument(&symbol)
         .map_or((8, 8), |i| (i.price_precision(), i.size_precision()));
 
-    let client_order_id =
-        match decode_client_order_id(&report.client_order_id, BINANCE_NAUTILUS_SPOT_BROKER_ID) {
-            Ok(client_order_id) => client_order_id,
-            Err(e) => {
-                log::warn!("Skipping Spot execution report with invalid client order ID: {e}");
-                return;
-            }
-        };
+    // Resolve the order's own ID: on cancel/expire/replace reports `c` is the
+    // request's ID and the order's ID is in `C`.
+    let client_order_id = match decode_client_order_id(
+        report.order_client_order_id(),
+        BINANCE_NAUTILUS_SPOT_BROKER_ID,
+    ) {
+        Ok(client_order_id) => client_order_id,
+        Err(e) => {
+            log::warn!("Skipping Spot execution report with invalid client order ID: {e}");
+            return;
+        }
+    };
 
     let identity = dispatch_state
         .order_identities
@@ -3891,6 +3895,64 @@ mod tests {
             clock.get_time_ns(),
         );
 
+        assert!(rx.try_recv().is_err());
+        assert!(dispatch_state.order_identities.is_empty());
+    }
+
+    #[rstest]
+    fn test_dispatch_execution_report_canceled_resolves_order_from_orig_client_order_id() {
+        // A cancel sent without `newClientOrderId` comes back with a
+        // Binance-generated ID in `c` and the order's ID in `C`. The report
+        // must still reach the tracked order and emit `OrderCanceled` for it.
+        let clock = get_atomic_clock_realtime();
+        let (emitter, mut rx) = create_test_emitter(clock);
+        let http_client = create_test_http_client(clock);
+        let client_order_id = ClientOrderId::from("O-20200101-000000-000-000-0");
+        let instrument_id = InstrumentId::from("ETHUSDT.BINANCE");
+        let dispatch_state = WsDispatchState::default();
+        dispatch_state.order_identities.insert(
+            client_order_id,
+            OrderIdentity {
+                instrument_id,
+                strategy_id: StrategyId::from("TEST-STRATEGY"),
+                order_side: OrderSide::Buy,
+                order_type: OrderType::Limit,
+                price: None,
+                quantity: Quantity::from("1"),
+                venue_position_id: None,
+            },
+        );
+        dispatch_state.insert_accepted(client_order_id);
+        let seen_trade_ids = Arc::new(Mutex::new(FifoCache::new()));
+
+        let json = crate::common::testing::load_fixture_string(
+            "spot/user_data_json/execution_report_canceled.json",
+        );
+        let mut report: BinanceSpotExecutionReport = serde_json::from_str(&json).unwrap();
+        report.client_order_id = "web_9c2b1f0e4a5d4c3b8e7f6a1d2c3b4a5e".to_string();
+        report.original_client_order_id = Some(encode_broker_id(
+            &client_order_id,
+            BINANCE_NAUTILUS_SPOT_BROKER_ID,
+        ));
+
+        dispatch_execution_report(
+            &report,
+            &emitter,
+            &http_client,
+            AccountId::from("BINANCE-001"),
+            false,
+            &dispatch_state,
+            &seen_trade_ids,
+            clock.get_time_ns(),
+        );
+
+        match rx.try_recv().expect("OrderCanceled expected") {
+            ExecutionEvent::Order(OrderEventAny::Canceled(event)) => {
+                assert_eq!(event.client_order_id, client_order_id);
+                assert_eq!(event.venue_order_id, Some(VenueOrderId::from("12345678")));
+            }
+            other => panic!("Expected OrderCanceled event, was {other:?}"),
+        }
         assert!(rx.try_recv().is_err());
         assert!(dispatch_state.order_identities.is_empty());
     }

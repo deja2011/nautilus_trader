@@ -129,12 +129,35 @@ pub struct BinanceSpotExecutionReport {
     /// Cumulative quote asset transacted quantity.
     #[serde(rename = "Z")]
     pub cumulative_quote_qty: String,
-    /// Original client order ID (for cancel-replace).
+    /// Original client order ID.
+    ///
+    /// Set on `CANCELED`, `EXPIRED` and `REPLACED` reports to the ID of the
+    /// order being acted on; empty otherwise. On those reports `c` carries the
+    /// client order ID of the *cancel or replace request* instead, which
+    /// Binance generates when the request does not supply one.
     #[serde(rename = "C", default)]
     pub original_client_order_id: Option<String>,
     /// Expiry reason for expired orders.
     #[serde(rename = "eR", default)]
     pub expiry_reason: Option<String>,
+}
+
+impl BinanceSpotExecutionReport {
+    /// Returns the client order ID of the order this report is about.
+    ///
+    /// Binance fills `c` with the client order ID of the *request* that
+    /// produced the report. For a `NEW` or `TRADE` report that is the order's
+    /// own ID, but for `CANCELED`, `EXPIRED` and `REPLACED` reports it is the
+    /// cancel/replace request's ID (auto-generated when the request supplied
+    /// none), and the order's ID is carried in `C` instead. Prefer `C` when it
+    /// is present so every report resolves to the order it belongs to.
+    #[must_use]
+    pub fn order_client_order_id(&self) -> &str {
+        match self.original_client_order_id.as_deref() {
+            Some(orig) if !orig.is_empty() => orig,
+            _ => &self.client_order_id,
+        }
+    }
 }
 
 /// Account position update event (`outboundAccountPosition`).
@@ -241,6 +264,27 @@ mod tests {
 
         assert_eq!(msg.execution_type, BinanceSpotExecutionType::Canceled);
         assert_eq!(msg.order_status, BinanceOrderStatus::Canceled);
+    }
+
+    #[rstest]
+    fn test_order_client_order_id_prefers_original_when_set() {
+        let json = load_fixture_string("spot/user_data_json/execution_report_canceled.json");
+        let mut msg: BinanceSpotExecutionReport = serde_json::from_str(&json).unwrap();
+        msg.client_order_id = "web_9c2b1f0e4a5d4c3b8e7f6a1d2c3b4a5e".to_string();
+        msg.original_client_order_id = Some("x-TD67BGP9-T0000000000000".to_string());
+
+        assert_eq!(msg.order_client_order_id(), "x-TD67BGP9-T0000000000000");
+    }
+
+    #[rstest]
+    #[case::empty(Some(String::new()))]
+    #[case::absent(None)]
+    fn test_order_client_order_id_falls_back_to_client_order_id(#[case] original: Option<String>) {
+        let json = load_fixture_string("spot/user_data_json/execution_report_new.json");
+        let mut msg: BinanceSpotExecutionReport = serde_json::from_str(&json).unwrap();
+        msg.original_client_order_id = original;
+
+        assert_eq!(msg.order_client_order_id(), msg.client_order_id);
     }
 
     #[rstest]
